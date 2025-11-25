@@ -19,13 +19,15 @@ import {
   Loader,
   Info,
   Leaf,
-  LogIn
+  LogIn,
+  MapPin
 } from 'lucide-react';
 import { useCartStore } from '../store/cartStore';
 import { useAuthStore } from '../store/authStore';
 import { useCurrencyStore } from '../store/currencyStore';
 import { formatPrice, getPriceForCurrency } from '../utils/currency';
 import AnimatedBackground from '../components/common/AnimatedBackground';
+import MapModal from '../components/map/MapModal';
 import api from '../services/api';
 import toast from 'react-hot-toast';
 
@@ -87,6 +89,14 @@ const Cart: React.FC = () => {
     phone: ''
   });
 
+  // Новые состояния для адреса и карты
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [deliveryCoordinates, setDeliveryCoordinates] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [showMapModal, setShowMapModal] = useState(false);
+
   const [isValidatingPromo, setIsValidatingPromo] = useState(false);
   const [appliedPromoCode, setAppliedPromoCode] = useState<string>('');
 
@@ -102,13 +112,57 @@ const Cart: React.FC = () => {
     console.log('=====================');
   }, [user, isAuthenticated]);
 
-const subtotal = items.reduce((sum, item) => {
-  const price = getPriceForCurrency(item.product, currency);
-  return sum + price * item.quantity;
-}, 0);
+  const subtotal = items.reduce((sum, item) => {
+    const price = getPriceForCurrency(item.product, currency);
+    return sum + price * item.quantity;
+  }, 0);
   const discountAmount = subtotal * discount;
   const total = subtotal - discountAmount;
   const itemCount = items.reduce((acc, item) => acc + item.quantity, 0);
+
+  // Функция для извлечения координат из ссылки Google Maps
+  const extractCoordinatesFromGoogleMapsUrl = (url: string): { lat: number; lng: number } | null => {
+    try {
+      const patterns = [
+        /@(-?\d+\.\d+),(-?\d+\.\d+)/,
+        /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
+        /\/place\/[^/]+\/@(-?\d+\.\d+),(-?\d+\.\d+)/,
+      ];
+
+      for (const pattern of patterns) {
+        const match = url.match(pattern);
+        if (match) {
+          return {
+            lat: parseFloat(match[1]),
+            lng: parseFloat(match[2])
+          };
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Обработка выбора локации на карте
+  const handleLocationSelect = (location: { lat: number; lng: number; address: string }) => {
+    setDeliveryAddress(location.address);
+    setDeliveryCoordinates({ lat: location.lat, lng: location.lng });
+    toast.success('Location selected!');
+  };
+
+  // Обработка ввода адреса
+  const handleAddressInputChange = (value: string) => {
+    setDeliveryAddress(value);
+    
+    if (value.includes('google.com/maps') || value.includes('goo.gl/maps')) {
+      const coords = extractCoordinatesFromGoogleMapsUrl(value);
+      if (coords) {
+        setDeliveryCoordinates(coords);
+        toast.success('Coordinates extracted from Google Maps link!');
+      }
+    }
+  };
 
   const handleApplyPromo = async () => {
     const code = promoCode.toUpperCase().trim();
@@ -128,12 +182,12 @@ const subtotal = items.reduce((sum, item) => {
     try {
       const productIds = items.map(item => parseInt(item.product.id));
 
-const response = await api.post('/admin/promo-codes/validate', {
-  code,
-  cart_total: subtotal,
-  product_ids: productIds,
-  currency: currency
-});
+      const response = await api.post('/admin/promo-codes/validate', {
+        code,
+        cart_total: subtotal,
+        product_ids: productIds,
+        currency: currency
+      });
 
       if (response.data.valid) {
         setIsPromoApplied(true);
@@ -221,7 +275,6 @@ const response = await api.post('/admin/promo-codes/validate', {
       return false;
     }
 
-    // ПРОВЕРКА АВТОРИЗАЦИИ
     if (!isAuthenticated || !user) {
       setShowLoginModal(true);
       return false;
@@ -241,11 +294,16 @@ const response = await api.post('/admin/promo-codes/validate', {
       }
     }
 
+    // Проверка адреса
+    if (!deliveryAddress || deliveryAddress.trim() === '') {
+      toast.error('Please enter your delivery address');
+      return false;
+    }
+
     return true;
   };
 
   const canPlaceOrder = () => {
-    // ПРОВЕРКА АВТОРИЗАЦИИ
     if (!isAuthenticated || !user) return false;
     
     const enabledMethods = contactMethods.filter(m => m.enabled);
@@ -255,6 +313,9 @@ const response = await api.post('/admin/promo-codes/validate', {
       const value = contactInfo[method.type];
       if (!value || value.trim() === '') return false;
     }
+
+    // Проверка адреса
+    if (!deliveryAddress || deliveryAddress.trim() === '') return false;
     
     return items.length > 0;
   };
@@ -272,24 +333,31 @@ const response = await api.post('/admin/promo-codes/validate', {
           value: contactInfo[m.type]
         }));
       
-const orderData = {
-  items: items.map(item => ({
-    name: item.product.name,
-    quantity: item.quantity,
-    price: getPriceForCurrency(item.product, currency),
-    type: item.product.type,
-    strain: item.strain,
-    size: item.product.size
-  })),
-  subtotal,
-  discount: discountAmount,
-  total,
-  currency: currency,
-  promoCode: isPromoApplied ? appliedPromoCode : undefined,
-  contactMethods: enabledContacts,
-  userName: user?.name,
-  userEmail: user?.email
-};
+      const orderData = {
+        items: items.map(item => ({
+          name: item.product.name,
+          quantity: item.quantity,
+          price: getPriceForCurrency(item.product, currency),
+          type: item.product.type,
+          strain: item.strain,
+          size: item.product.size
+        })),
+        subtotal,
+        discount: discountAmount,
+        total,
+        currency: currency,
+        promoCode: isPromoApplied ? appliedPromoCode : undefined,
+        contactMethods: enabledContacts,
+        userName: user?.name,
+        userEmail: user?.email,
+        // Добавляем адрес и координаты
+        deliveryAddress: deliveryAddress,
+        deliveryCoordinates: deliveryCoordinates ? {
+          lat: deliveryCoordinates.lat,
+          lng: deliveryCoordinates.lng,
+          googleMapsLink: `https://www.google.com/maps?q=${deliveryCoordinates.lat},${deliveryCoordinates.lng}`
+        } : null
+      };
     
       await api.post('/telegram/send-order', orderData);
     
@@ -324,6 +392,14 @@ const orderData = {
   return (
     <div className="min-h-screen relative bg-black">
       <AnimatedBackground />
+      
+      {/* Map Modal */}
+      <MapModal
+        isOpen={showMapModal}
+        onClose={() => setShowMapModal(false)}
+        onSelectLocation={handleLocationSelect}
+        initialLocation={deliveryCoordinates || undefined}
+      />
       
       {/* Login Required Modal */}
       <AnimatePresence>
@@ -730,22 +806,22 @@ const orderData = {
                         </div>
                         
                         <div className="text-right">
-<div className="text-lg font-bold">
-  {formatPrice(
-    (item.product.price || 0) * item.quantity,
-    (item.product.price_rub || 0) * item.quantity,
-    (item.product.price_usd || 0) * item.quantity,
-    currency
-  )}
-</div>
-<div className="text-xs text-gray-500">
-  {formatPrice(
-    item.product.price,
-    item.product.price_rub,
-    item.product.price_usd,
-    currency
-  )} each
-</div>
+                          <div className="text-lg font-bold">
+                            {formatPrice(
+                              (item.product.price || 0) * item.quantity,
+                              (item.product.price_rub || 0) * item.quantity,
+                              (item.product.price_usd || 0) * item.quantity,
+                              currency
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {formatPrice(
+                              item.product.price,
+                              item.product.price_rub,
+                              item.product.price_usd,
+                              currency
+                            )} each
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -756,88 +832,88 @@ const orderData = {
 
             {/* Order Summary & Contact */}
             <div className="space-y-6">
-            {/* Promo Code */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="glass-dark rounded-2xl p-6 border border-white/10"
-            >
-              <div className="flex items-center gap-2 mb-4">
-                <Tag className="w-5 h-5 text-primary" />
-                <h3 className="font-semibold">Promo Code</h3>
-              </div>
+              {/* Promo Code */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="glass-dark rounded-2xl p-6 border border-white/10"
+              >
+                <div className="flex items-center gap-2 mb-4">
+                  <Tag className="w-5 h-5 text-primary" />
+                  <h3 className="font-semibold">Promo Code</h3>
+                </div>
 
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={promoCode}
-                  onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
-                  placeholder="Enter code"
-                  disabled={isPromoApplied}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter' && !isPromoApplied) {
-                      handleApplyPromo();
-                    }
-                  }}
-                  className="flex-1 px-4 py-2 bg-white/5 rounded-xl border border-white/10 focus:border-primary/50 transition-colors disabled:opacity-50 uppercase"
-                  maxLength={20}
-                />
-                {isPromoApplied ? (
-                  <button
-                    onClick={() => {
-                      setIsPromoApplied(false);
-                      setDiscount(0);
-                      setPromoCode('');
-                      setAppliedPromoCode('');
-                      toast.success('Promo code removed');
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={promoCode}
+                    onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                    placeholder="Enter code"
+                    disabled={isPromoApplied}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !isPromoApplied) {
+                        handleApplyPromo();
+                      }
                     }}
-                    className="px-4 py-2 bg-red-500/20 text-red-400 rounded-xl hover:bg-red-500/30 transition-colors"
+                    className="flex-1 px-4 py-2 bg-white/5 rounded-xl border border-white/10 focus:border-primary/50 transition-colors disabled:opacity-50 uppercase"
+                    maxLength={20}
+                  />
+                  {isPromoApplied ? (
+                    <button
+                      onClick={() => {
+                        setIsPromoApplied(false);
+                        setDiscount(0);
+                        setPromoCode('');
+                        setAppliedPromoCode('');
+                        toast.success('Promo code removed');
+                      }}
+                      className="px-4 py-2 bg-red-500/20 text-red-400 rounded-xl hover:bg-red-500/30 transition-colors"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  ) : (
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={handleApplyPromo}
+                      disabled={isValidatingPromo || !promoCode.trim()}
+                      className="px-6 py-2 bg-primary/20 text-primary rounded-xl hover:bg-primary/30 transition-colors font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {isValidatingPromo ? (
+                        <>
+                          <Loader className="w-4 h-4 animate-spin" />
+                          Checking...
+                        </>
+                      ) : (
+                        'Apply'
+                      )}
+                    </motion.button>
+                  )}
+                </div>
+                
+                {isPromoApplied && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    className="mt-3 p-3 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center gap-2"
                   >
-                    <X className="w-5 h-5" />
-                  </button>
-                ) : (
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={handleApplyPromo}
-                    disabled={isValidatingPromo || !promoCode.trim()}
-                    className="px-6 py-2 bg-primary/20 text-primary rounded-xl hover:bg-primary/30 transition-colors font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                  >
-                    {isValidatingPromo ? (
-                      <>
-                        <Loader className="w-4 h-4 animate-spin" />
-                        Checking...
-                      </>
-                    ) : (
-                      'Apply'
-                    )}
-                  </motion.button>
-                )}
-              </div>
-              
-              {isPromoApplied && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  className="mt-3 p-3 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center gap-2"
-                >
-                  <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
-                  <div className="flex-1">
-                    <span className="text-sm text-green-400 font-medium">
-                      {appliedPromoCode} applied
-                    </span>
-                    <div className="text-xs text-green-400/80 mt-0.5">
-                      Save ฿{discountAmount.toLocaleString()}
+                    <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+                    <div className="flex-1">
+                      <span className="text-sm text-green-400 font-medium">
+                        {appliedPromoCode} applied
+                      </span>
+                      <div className="text-xs text-green-400/80 mt-0.5">
+                        Save ฿{discountAmount.toLocaleString()}
+                      </div>
                     </div>
-                  </div>
-                </motion.div>
-              )}
+                  </motion.div>
+                )}
 
-              <p className="text-xs text-gray-500 mt-2">
-                Enter your promotional code to receive a discount
-              </p>
-            </motion.div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Enter your promotional code to receive a discount
+                </p>
+              </motion.div>
 
               {/* Contact Methods */}
               <motion.div
@@ -922,6 +998,66 @@ const orderData = {
                 </AnimatePresence>
               </motion.div>
 
+              {/* Delivery Address Section */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.35 }}
+                className="glass-dark rounded-2xl p-6 border border-white/10"
+              >
+                <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+                  <MapPin className="w-5 h-5 text-primary" />
+                  Delivery Address *
+                </h3>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-gray-400 mb-2 block">
+                      Enter address or Google Maps link
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={deliveryAddress}
+                        onChange={(e) => handleAddressInputChange(e.target.value)}
+                        placeholder="Paste Google Maps link or enter address..."
+                        className="w-full px-4 py-3 bg-white/5 rounded-xl border border-white/10 focus:border-primary/50 transition-colors pr-12"
+                      />
+                      {deliveryCoordinates && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                          <CheckCircle className="w-5 h-5 text-green-400" />
+                        </div>
+                      )}
+                    </div>
+                    
+                    {deliveryCoordinates && (
+                      <motion.p
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="text-xs text-green-400 mt-2 flex items-center gap-1"
+                      >
+                        <CheckCircle className="w-3 h-3" />
+                        Coordinates detected: {deliveryCoordinates.lat.toFixed(4)}, {deliveryCoordinates.lng.toFixed(4)}
+                      </motion.p>
+                    )}
+                  </div>
+                  
+                  <div className="pt-3 border-t border-white/10">
+                    <button
+                      onClick={() => setShowMapModal(true)}
+                      className="w-full px-4 py-3 bg-gradient-to-r from-primary/20 to-secondary/20 hover:from-primary/30 hover:to-secondary/30 rounded-xl border border-primary/30 transition-all flex items-center justify-center gap-2 group"
+                    >
+                      <MapPin className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                      <span>Select on Map</span>
+                    </button>
+                    
+                    <p className="text-xs text-gray-500 text-center mt-2">
+                      Or click here to choose your location on an interactive map
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+
               {/* Order Summary */}
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -932,22 +1068,22 @@ const orderData = {
                 <h3 className="font-semibold text-lg mb-4">Order Summary</h3>
                 
                 <div className="space-y-3 mb-4">
-<div className="flex justify-between text-gray-400">
-  <span>Subtotal ({itemCount} items)</span>
-  <span>{formatPrice(subtotal, subtotal, subtotal, currency)}</span>
-</div>
+                  <div className="flex justify-between text-gray-400">
+                    <span>Subtotal ({itemCount} items)</span>
+                    <span>{formatPrice(subtotal, subtotal, subtotal, currency)}</span>
+                  </div>
                   
-{discountAmount > 0 && (
-  <div className="flex justify-between text-green-400">
-    <span>Discount</span>
-    <span>-{formatPrice(discountAmount, discountAmount, discountAmount, currency)}</span>
-  </div>
-)}
+                  {discountAmount > 0 && (
+                    <div className="flex justify-between text-green-400">
+                      <span>Discount</span>
+                      <span>-{formatPrice(discountAmount, discountAmount, discountAmount, currency)}</span>
+                    </div>
+                  )}
                   
-<div className="pt-3 border-t border-white/10 flex justify-between text-xl font-bold">
-  <span>Total</span>
-  <span className="text-primary">{formatPrice(total, total, total, currency)}</span>
-</div>
+                  <div className="pt-3 border-t border-white/10 flex justify-between text-xl font-bold">
+                    <span>Total</span>
+                    <span className="text-primary">{formatPrice(total, total, total, currency)}</span>
+                  </div>
                 </div>
                 
                 <motion.button
@@ -974,7 +1110,7 @@ const orderData = {
                   ) : !canPlaceOrder() ? (
                     <>
                       <AlertCircle className="w-5 h-5" />
-                      <span>Fill Contact Info</span>
+                      <span>Complete All Fields</span>
                     </>
                   ) : (
                     <>
