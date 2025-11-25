@@ -1,201 +1,395 @@
 import { Request, Response } from 'express';
-import { OrderService } from '../services/order.service';
-import { CartService } from '../services/cart.service';
-import { PromoCodeService } from '../services/promocode.service';
-import { AppError, asyncHandler } from '../middleware/error.middleware';
+import pool from '../config/database';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { TelegramService } from '../services/telegram.service';
 
-export const createOrder = asyncHandler(async (req: any, res: Response) => {
-  const userId = req.user.id;
-  const { 
-    delivery_method,
-    delivery_name,
-    delivery_phone,
-    delivery_address,
-    delivery_city,
-    delivery_postal_code,
-    delivery_country,
-    payment_method,
-    gift_message,
-    notes,
-    promo_code,
-    currency
-  } = req.body;
-  
-  const orderCurrency = currency || 'THB';
-  
-  // Get cart items
-  const cartItems = await CartService.getCart(userId);
-  
-  if (cartItems.length === 0) {
-    throw new AppError('Cart is empty', 400);
-  }
-  
-  // Calculate subtotal
-  let subtotal = 0;
-  const orderItems = cartItems.map(item => {
-    const price = (item.product as any).price;
-    const total = price * item.quantity;
-    subtotal += total;
-    
-    return {
-      product_id: item.product_id,
-      strain_id: item.strain_id,
-      quantity: item.quantity,
-      price: price,
-      total: total
-    };
-  });
-  
-  // Calculate delivery fee
-  const deliveryFee = delivery_method === 'express' ? 200 : 100;
-  
-  // Apply promo code if provided
-  let discountAmount = 0;
-  let promoCodeId = null;
-  
-if (promo_code) {
-  const promoResult = await PromoCodeService.validatePromoCode(
-    promo_code,
-    userId,
-    subtotal,
-    cartItems.map(item => item.product_id),
-    orderCurrency
-  );
-  
-  if (!promoResult.valid) {
-    throw new AppError(promoResult.message || 'Invalid promo code', 400);
-  }
-  
-  discountAmount = promoResult.discount;
-  const promo = await PromoCodeService.findByCode(promo_code);
-  if (promo) {
-    promoCodeId = promo.id;
-  }
+interface AuthRequest extends Request {
+  user?: any;
 }
-  
-  // Check for free delivery
-  const totalBeforeDelivery = subtotal - discountAmount;
-  const finalDeliveryFee = totalBeforeDelivery >= 2500 ? 0 : deliveryFee;
-  
-  // Create order
-// Create order
-const order = await OrderService.create(userId, {
-  items: orderItems,
-  subtotal,
-  discount_amount: discountAmount,
-  delivery_fee: finalDeliveryFee,
-  total: totalBeforeDelivery + finalDeliveryFee,
-  currency: orderCurrency,
-  delivery_method,
-  delivery_name,
-  delivery_phone,
-  delivery_address,
-  delivery_city,
-  delivery_postal_code,
-  delivery_country,
-  payment_method,
-  gift_message,
-  notes
-});
-  
-  // Record promo code usage
-  if (promoCodeId) {
-    await PromoCodeService.recordUsage(promoCodeId, userId);
-  }
-  
-  res.status(201).json({
-    success: true,
-    order
-  });
-});
 
-export const getOrders = asyncHandler(async (req: any, res: Response) => {
-  const userId = req.user.id;
-  const filters = {
-    status: req.query.status,
-    page: parseInt(req.query.page as string) || 1,
-    limit: parseInt(req.query.limit as string) || 10
+export const createOrder = async (req: AuthRequest, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    console.log('=== CREATE ORDER DEBUG ===');
+    console.log('User:', req.user);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    console.log('========================');
+    
+    await connection.beginTransaction();
+    
+    const userId = req.user?.id;
+    if (!userId) {
+      console.log('❌ No user ID');
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
+    }
+
+    const {
+      items,
+      subtotal,
+      discount_amount = 0,
+      delivery_fee = 0,
+      total,
+      currency = 'THB',
+      promo_code,
+      contact_methods,
+      delivery_address,
+      delivery_city = '',
+      delivery_postal_code = '',
+      delivery_country = 'Thailand',
+      delivery_coordinates,
+      gift_message,
+      notes
+    } = req.body;
+
+    console.log('Parsed data:', { 
+      items: items?.length, 
+      delivery_address,
+      contact_methods: contact_methods?.length 
+    });
+
+    // Validate
+    if (!items || items.length === 0) {
+      console.log('❌ No items');
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'No items in order' });
+    }
+
+    if (!delivery_address) {
+      console.log('❌ No delivery address');
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Delivery address is required' });
+    }
+
+    if (!contact_methods || contact_methods.length === 0) {
+      console.log('❌ No contact methods');
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'At least one contact method is required' });
+    }
+
+    // Generate order number
+    const orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+    console.log('📋 Generated order number:', orderNumber);
+
+    // Extract contact info
+    const primaryContact = contact_methods[0];
+    const delivery_phone = primaryContact.value;
+    const delivery_name = req.user?.name || 'Customer';
+
+    // Prepare notes with all contact methods and coordinates
+    let orderNotes = '';
+    if (contact_methods.length > 0) {
+      orderNotes += 'Contact Methods:\n';
+      contact_methods.forEach((method: any) => {
+        orderNotes += `${method.type}: ${method.value}\n`;
+      });
+    }
+    if (delivery_coordinates) {
+      orderNotes += `\nDelivery Coordinates:\n`;
+      orderNotes += `Latitude: ${delivery_coordinates.lat}\n`;
+      orderNotes += `Longitude: ${delivery_coordinates.lng}\n`;
+      if (delivery_coordinates.googleMapsLink) {
+        orderNotes += `Google Maps: ${delivery_coordinates.googleMapsLink}\n`;
+      }
+    }
+    if (notes) {
+      orderNotes += `\nAdditional Notes:\n${notes}`;
+    }
+
+    // Create order
+    const [orderResult] = await connection.execute<ResultSetHeader>(
+      `INSERT INTO orders (
+        order_number, user_id, status, subtotal, discount_amount, 
+        delivery_fee, total, currency, delivery_method, payment_method,
+        payment_status, delivery_name, delivery_phone, delivery_address,
+        delivery_city, delivery_postal_code, delivery_country, gift_message, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        orderNumber,
+        userId,
+        'pending',
+        subtotal,
+        discount_amount,
+        delivery_fee,
+        total,
+        currency,
+        'standard',
+        'pending',
+        'pending',
+        delivery_name,
+        delivery_phone,
+        delivery_address,
+        delivery_city,
+        delivery_postal_code,
+        delivery_country,
+        gift_message || null,
+        orderNotes
+      ]
+    );
+
+    const orderId = orderResult.insertId;
+    console.log('✅ Order created in database with ID:', orderId);
+
+    // Create order items
+    for (const item of items) {
+      // Find product ID by name
+      const [productRows] = await connection.execute<RowDataPacket[]>(
+        'SELECT id FROM products WHERE name = ? LIMIT 1',
+        [item.name]
+      );
+
+      if (productRows.length === 0) {
+        console.warn(`⚠️ Product not found: ${item.name}`);
+        continue;
+      }
+
+      const productId = productRows[0].id;
+
+      // Find strain ID if strain is provided
+      let strainId = null;
+      if (item.strain) {
+        const [strainRows] = await connection.execute<RowDataPacket[]>(
+          'SELECT id FROM strains WHERE name = ? LIMIT 1',
+          [item.strain]
+        );
+        if (strainRows.length > 0) {
+          strainId = strainRows[0].id;
+        }
+      }
+
+      await connection.execute(
+        `INSERT INTO order_items (order_id, product_id, strain_id, quantity, price, total)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [orderId, productId, strainId, item.quantity, item.price, item.price * item.quantity]
+      );
+    }
+
+    await connection.commit();
+    console.log('✅ Database transaction committed successfully');
+
+    // Send Telegram notification
+    console.log('\n📱 === SENDING TELEGRAM NOTIFICATION ===');
+    console.log('Bot Token exists:', !!process.env.TELEGRAM_BOT_TOKEN);
+    console.log('Admin Chat ID exists:', !!process.env.TELEGRAM_ADMIN_CHAT_ID);
+    console.log('Admin Chat ID value:', process.env.TELEGRAM_ADMIN_CHAT_ID);
+    
+    try {
+      const telegramData = {
+        orderNumber,
+        userName: delivery_name,
+        userEmail: req.user?.email,
+        items,
+        subtotal,
+        discount: discount_amount,
+        total,
+        currency,
+        promoCode: promo_code,
+        contactMethods: contact_methods,
+        deliveryAddress: delivery_address,
+        deliveryCoordinates: delivery_coordinates,
+        giftMessage: gift_message
+      };
+
+      console.log('📝 Preparing Telegram message with data:', {
+        orderNumber: telegramData.orderNumber,
+        userName: telegramData.userName,
+        itemsCount: telegramData.items.length,
+        total: telegramData.total
+      });
+
+      const telegramMessage = formatOrderForTelegram(telegramData);
+      console.log('📄 Telegram message formatted (first 300 chars):', telegramMessage.substring(0, 300));
+
+      await TelegramService.sendOrderNotification(telegramMessage);
+      console.log('✅ Telegram notification sent successfully!');
+    } catch (telegramError: any) {
+      console.error('❌ Failed to send Telegram notification:');
+      console.error('Error name:', telegramError.name);
+      console.error('Error message:', telegramError.message);
+      console.error('Error stack:', telegramError.stack);
+      // Don't fail the order if Telegram fails
+    }
+    console.log('=== END TELEGRAM NOTIFICATION ===\n');
+
+    res.status(201).json({
+      success: true,
+      message: 'Order created successfully',
+      order: {
+        id: orderId,
+        order_number: orderNumber,
+        status: 'pending',
+        total
+      }
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('❌ Create order error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create order',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+// Format order for Telegram
+// Format order for Telegram - SAFE VERSION
+function formatOrderForTelegram(data: any): string {
+  console.log('🔧 Formatting Telegram message...');
+  
+  // Helper function to safely convert to number
+  const toNumber = (value: any): number => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      const parsed = parseFloat(value);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
   };
   
-  const orders = await OrderService.findByUserId(userId, filters);
+  let message = `🛍️ *NEW ORDER*\n\n`;
+  message += `📋 Order: \`${data.orderNumber}\`\n`;
+  message += `👤 Customer: ${data.userName}\n`;
+  if (data.userEmail) {
+    message += `📧 Email: ${data.userEmail}\n`;
+  }
+  message += `\n*📦 Items:*\n`;
   
-  res.json({
-    success: true,
-    orders,
-    page: filters.page,
-    limit: filters.limit
+  data.items.forEach((item: any, index: number) => {
+    const itemPrice = toNumber(item.price);
+    const itemTotal = itemPrice * item.quantity;
+    
+    message += `${index + 1}. ${item.name}\n`;
+    if (item.strain) message += `   🌿 Strain: ${item.strain}\n`;
+    if (item.size) message += `   📏 Size: ${item.size}\n`;
+    message += `   💰 ${item.quantity} x ฿${itemPrice.toFixed(2)} = ฿${itemTotal.toFixed(2)}\n`;
   });
-});
-
-export const getOrder = asyncHandler(async (req: any, res: Response) => {
-  const orderId = parseInt(req.params.id);
-  const order = await OrderService.findById(orderId);
   
-  // Check if user owns this order
-  if (req.user.role !== 'admin' && order.user_id !== req.user.id) {
-    throw new AppError('Unauthorized', 403);
+  const subtotal = toNumber(data.subtotal);
+  const discount = toNumber(data.discount);
+  const total = toNumber(data.total);
+  
+  message += `\n*💵 Summary:*\n`;
+  message += `Subtotal: ฿${subtotal.toFixed(2)}\n`;
+  if (discount > 0) {
+    message += `Discount: -฿${discount.toFixed(2)}\n`;
+    if (data.promoCode) {
+      message += `Promo Code: \`${data.promoCode}\`\n`;
+    }
+  }
+  message += `*Total: ฿${total.toFixed(2)}* ${data.currency}\n`;
+  
+  message += `\n*📞 Contact Methods:*\n`;
+  data.contactMethods.forEach((method: any) => {
+    const emoji = method.type === 'whatsapp' ? '📱' : method.type === 'telegram' ? '✈️' : '☎️';
+    message += `${emoji} ${method.type}: \`${method.value}\`\n`;
+  });
+  
+  message += `\n*📍 Delivery Address:*\n`;
+  message += `${data.deliveryAddress}\n`;
+  
+  if (data.deliveryCoordinates) {
+    message += `\n*🗺️ Location:*\n`;
+    const lat = toNumber(data.deliveryCoordinates.lat);
+    const lng = toNumber(data.deliveryCoordinates.lng);
+    message += `📍 ${lat.toFixed(6)}, ${lng.toFixed(6)}\n`;
+    if (data.deliveryCoordinates.googleMapsLink) {
+      message += `[Open in Google Maps](${data.deliveryCoordinates.googleMapsLink})\n`;
+    }
   }
   
-  res.json({
-    success: true,
-    order
-  });
-});
+  if (data.giftMessage) {
+    message += `\n*🎁 Gift Message:*\n${data.giftMessage}\n`;
+  }
+  
+  console.log('✅ Telegram message formatted successfully');
+  return message;
+}
 
-export const getAllOrders = asyncHandler(async (req: Request, res: Response) => {
-  const filters = {
-    status: req.query.status,
-    payment_status: req.query.payment_status,
-    date_from: req.query.date_from,
-    date_to: req.query.date_to,
-    page: parseInt(req.query.page as string) || 1,
-    limit: parseInt(req.query.limit as string) || 20
-  };
-  
-  const orders = await OrderService.findAll(filters);
-  
-  res.json({
-    success: true,
-    orders,
-    page: filters.page,
-    limit: filters.limit
-  });
-});
+export const getOrders = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT o.*, COUNT(oi.id) as items_count 
+       FROM orders o
+       LEFT JOIN order_items oi ON o.id = oi.order_id
+       WHERE o.user_id = ?
+       GROUP BY o.id
+       ORDER BY o.created_at DESC`,
+      [userId]
+    );
+    
+    res.json({
+      success: true,
+      orders: rows
+    });
+  } catch (error) {
+    console.error('Get orders error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders'
+    });
+  }
+};
 
-export const updateOrderStatus = asyncHandler(async (req: Request, res: Response) => {
-  const orderId = parseInt(req.params.id);
-  const { status, tracking_number } = req.body;
-  
-  const order = await OrderService.updateStatus(orderId, status, tracking_number);
-  
-  res.json({
-    success: true,
-    order
-  });
-});
+export const getOrder = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    
+    const [orderRows] = await pool.execute<RowDataPacket[]>(
+      'SELECT * FROM orders WHERE id = ? AND user_id = ?',
+      [id, userId]
+    );
+    
+    if (orderRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    const [itemRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT oi.*, p.name as product_name, p.image as product_image, s.name as strain_name
+       FROM order_items oi
+       LEFT JOIN products p ON oi.product_id = p.id
+       LEFT JOIN strains s ON oi.strain_id = s.id
+       WHERE oi.order_id = ?`,
+      [id]
+    );
+    
+    res.json({
+      success: true,
+      order: {
+        ...orderRows[0],
+        items: itemRows
+      }
+    });
+  } catch (error) {
+    console.error('Get order error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order'
+    });
+  }
+};
 
-export const updatePaymentStatus = asyncHandler(async (req: Request, res: Response) => {
-  const orderId = parseInt(req.params.id);
-  const { payment_status } = req.body;
-  
-  const order = await OrderService.updatePaymentStatus(orderId, payment_status);
-  
-  res.json({
-    success: true,
-    order
-  });
-});
+export const getAllOrders = async (req: Request, res: Response) => {
+  res.status(501).json({ message: 'Use admin routes' });
+};
 
-export const getOrderStatistics = asyncHandler(async (req: Request, res: Response) => {
-  const { date_from, date_to } = req.query;
-  
-  const stats = await OrderService.getStatistics(
-    date_from ? new Date(date_from as string) : undefined,
-    date_to ? new Date(date_to as string) : undefined
-  );
-  
-  res.json({
-    success: true,
-    statistics: stats
-  });
-});
+export const getOrderStatistics = async (req: Request, res: Response) => {
+  res.status(501).json({ message: 'Use admin routes' });
+};
+
+export const updateOrderStatus = async (req: Request, res: Response) => {
+  res.status(501).json({ message: 'Use admin routes' });
+};
+
+export const updatePaymentStatus = async (req: Request, res: Response) => {
+  res.status(501).json({ message: 'Use admin routes' });
+};

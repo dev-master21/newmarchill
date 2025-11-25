@@ -57,6 +57,8 @@ const getTypeEmoji = (type?: string): string => {
   }
 };
 
+
+
 const getTypeName = (type?: string): string => {
   if (!type) return 'Unknown';
   
@@ -132,7 +134,7 @@ export const sendOrderToTelegram = asyncHandler(async (req: AuthRequest, res: Re
   if (orderData.deliveryAddress) {
     message += '\n📍 *Адрес доставки:*\n';
     message += `${escapeMarkdown(orderData.deliveryAddress)}\n`;
-    
+
     if (orderData.deliveryCoordinates) {
       message += `🗺️ [Открыть на карте](${orderData.deliveryCoordinates.googleMapsLink})\n`;
       message += `📐 Координаты: \`${orderData.deliveryCoordinates.lat.toFixed(6)}, ${orderData.deliveryCoordinates.lng.toFixed(6)}\`\n`;

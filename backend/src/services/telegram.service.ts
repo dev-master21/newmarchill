@@ -2,19 +2,33 @@ import TelegramBot from 'node-telegram-bot-api';
 import pool from '../config/database';
 import { ResultSetHeader, RowDataPacket } from 'mysql2';
 import crypto from 'crypto';
+import axios from 'axios';
 
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
 const chatId = process.env.TELEGRAM_CHAT_ID;
-const clientUrl = process.env.CLIENT_URL || 'https://market.chillium.asia';
+// Убираем trailing slash если есть
+const clientUrl = (process.env.CLIENT_URL || 'https://market.chillium.asia').replace(/\/$/, '');
+
+console.log('=== TELEGRAM SERVICE INITIALIZATION ===');
+console.log('Bot Token exists:', !!botToken);
+console.log('Chat ID:', chatId);
+console.log('Admin Chat ID:', process.env.TELEGRAM_ADMIN_CHAT_ID);
+console.log('Client URL:', clientUrl);
+console.log('======================================');
 
 if (!botToken) {
-  console.error('TELEGRAM_BOT_TOKEN is not defined in environment variables');
+  console.error('❌ TELEGRAM_BOT_TOKEN is not defined in environment variables');
 }
 
 let bot: TelegramBot | null = null;
 
 if (botToken) {
-  bot = new TelegramBot(botToken, { polling: true });
+  try {
+    bot = new TelegramBot(botToken, { polling: true });
+    console.log('✅ Telegram bot instance created successfully');
+  } catch (error) {
+    console.error('❌ Failed to create Telegram bot instance:', error);
+  }
 }
 
 export class TelegramService {
@@ -79,6 +93,32 @@ export class TelegramService {
     };
   }
 
+  // Send order notification to admin - используем axios напрямую (как в рабочем telegram.controller.ts)
+  static async sendOrderNotification(message: string): Promise<void> {
+    // Используем те же данные что и в рабочем telegram.controller.ts
+    const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8325192043:AAGS5bjyt4IcdMhLRUzCEHygYXRCCS_v4Hw';
+    const ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '-5064949329';
+    
+    console.log('\n📤 === Sending order notification ===');
+    console.log('Target chat ID:', ADMIN_CHAT_ID);
+    console.log('Message length:', message.length);
+    
+    try {
+      const response = await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        chat_id: ADMIN_CHAT_ID,
+        text: message,
+        parse_mode: 'Markdown'
+      });
+      
+      console.log('✅ Order notification sent successfully!');
+      console.log('Message ID:', response.data.result?.message_id);
+      console.log('=== End notification ===\n');
+    } catch (error: any) {
+      console.error('❌ Failed to send notification:', error.response?.data || error.message);
+      // Don't throw - we don't want to fail the order
+    }
+  }
+
   // Check channel/chat subscription
   static async checkSubscription(telegramId: number): Promise<boolean> {
     if (!bot || !chatId) {
@@ -98,21 +138,23 @@ export class TelegramService {
   // Initialize bot
   static initBot() {
     if (!bot) {
-      console.log('Telegram bot not initialized - missing TELEGRAM_BOT_TOKEN');
+      console.log('⚠️ Telegram bot not initialized - missing TELEGRAM_BOT_TOKEN');
       return;
     }
 
-    console.log('Telegram bot started');
+    console.log('✅ Initializing Telegram bot...');
 
     // Handle /start command
     bot.onText(/\/start/, async (msg) => {
-      const chatId = msg.chat.id;
+      const msgChatId = msg.chat.id;
       const telegramId = msg.from?.id;
 
       if (!telegramId) return;
 
+      console.log('📱 /start command received from user:', telegramId);
+
       // Request contact
-      await bot!.sendMessage(chatId, 
+      await bot!.sendMessage(msgChatId, 
         '👋 Welcome to Chillium Market!\n\n' +
         'To authorize on the website, please share your contact.',
         {
@@ -129,17 +171,19 @@ export class TelegramService {
 
     // Handle contact reception
     bot.on('contact', async (msg) => {
-      const chatId = msg.chat.id;
+      const msgChatId = msg.chat.id;
       const contact = msg.contact;
       const telegramId = msg.from?.id;
 
       if (!contact || !telegramId) return;
 
+      console.log('📞 Contact received from user:', telegramId);
+
       // Check subscription
       const isSubscribed = await this.checkSubscription(telegramId);
 
       if (!isSubscribed) {
-        await bot!.sendMessage(chatId,
+        await bot!.sendMessage(msgChatId,
           '❌ Channel subscription is required for authorization.\n\n' +
           'After subscribing, press /start again.',
           {
@@ -155,9 +199,12 @@ export class TelegramService {
 
       // Generate authorization token
       const token = await this.generateAuthToken(telegramId);
-      const authUrl = `${clientUrl}auth/telegram-callback?token=${token}`;
+      // ИСПРАВЛЕНО: правильный URL без двойного слеша
+      const authUrl = `${clientUrl}/auth/telegram-callback?token=${token}`;
+      
+      console.log('🔗 Generated auth URL:', authUrl);
 
-      await bot!.sendMessage(chatId,
+      await bot!.sendMessage(msgChatId,
         '✅ Great! You are subscribed to the channel.\n\n' +
         'Now click the button below to authorize on the website.',
         {
@@ -173,8 +220,10 @@ export class TelegramService {
 
     // Handle errors
     bot.on('polling_error', (error) => {
-      console.error('Telegram polling error:', error);
+      console.error('⚠️ Telegram polling error:', error);
     });
+
+    console.log('✅ Telegram bot initialized successfully');
   }
 
   // Link Telegram account with existing user
