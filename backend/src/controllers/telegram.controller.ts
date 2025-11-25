@@ -30,6 +30,12 @@ interface TelegramOrderData {
   contactMethods: ContactMethod[];
   userName?: string;
   userEmail?: string;
+  deliveryAddress?: string;  // ДОБАВИТЬ
+  deliveryCoordinates?: {    // ДОБАВИТЬ
+    lat: number;
+    lng: number;
+    googleMapsLink: string;
+  };
 }
 
 const escapeMarkdown = (text: string): string => {
@@ -122,7 +128,17 @@ export const sendOrderToTelegram = asyncHandler(async (req: AuthRequest, res: Re
     message += `${icon} ${label}: \`${escapeMarkdown(method.value)}\`\n`;
   });
   message += '\n';
-  
+    // Адрес доставки
+  if (orderData.deliveryAddress) {
+    message += '\n📍 *Адрес доставки:*\n';
+    message += `${escapeMarkdown(orderData.deliveryAddress)}\n`;
+    
+    if (orderData.deliveryCoordinates) {
+      message += `🗺️ [Открыть на карте](${orderData.deliveryCoordinates.googleMapsLink})\n`;
+      message += `📐 Координаты: \`${orderData.deliveryCoordinates.lat.toFixed(6)}, ${orderData.deliveryCoordinates.lng.toFixed(6)}\`\n`;
+    }
+    message += '\n';
+  }
   message += '🛒 *Товары:*\n';
   message += '━━━━━━━━━━━━━━━━━━\n';
   
