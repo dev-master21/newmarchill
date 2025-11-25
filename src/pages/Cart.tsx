@@ -320,61 +320,71 @@ const Cart: React.FC = () => {
     return items.length > 0;
   };
 
-  const handlePlaceOrder = async () => {
-    if (!validateOrder()) return;
-  
-    setIsProcessing(true);
-  
-    try {
-      const enabledContacts = contactMethods
-        .filter(m => m.enabled)
-        .map(m => ({
-          type: m.type,
-          value: contactInfo[m.type]
-        }));
-      
-      const orderData = {
-        items: items.map(item => ({
-          name: item.product.name,
-          quantity: item.quantity,
-          price: getPriceForCurrency(item.product, currency),
-          type: item.product.type,
-          strain: item.strain,
-          size: item.product.size
-        })),
-        subtotal,
-        discount: discountAmount,
-        total,
-        currency: currency,
-        promoCode: isPromoApplied ? appliedPromoCode : undefined,
-        contactMethods: enabledContacts,
-        userName: user?.name,
-        userEmail: user?.email,
-        // Добавляем адрес и координаты
-        deliveryAddress: deliveryAddress,
-        deliveryCoordinates: deliveryCoordinates ? {
-          lat: deliveryCoordinates.lat,
-          lng: deliveryCoordinates.lng,
-          googleMapsLink: `https://www.google.com/maps?q=${deliveryCoordinates.lat},${deliveryCoordinates.lng}`
-        } : null
-      };
+const handlePlaceOrder = async () => {
+  if (!validateOrder()) return;
+
+  setIsProcessing(true);
+
+  try {
+    const enabledContacts = contactMethods
+      .filter(m => m.enabled)
+      .map(m => ({
+        type: m.type,
+        value: contactInfo[m.type]
+      }));
     
-      await api.post('/telegram/send-order', orderData);
-    
+    const orderData = {
+      items: items.map(item => ({
+        name: item.product.name,
+        quantity: item.quantity,
+        price: getPriceForCurrency(item.product, currency),
+        type: item.product.type,
+        strain: item.strain,
+        size: item.product.size
+      })),
+      subtotal,
+      discount_amount: discountAmount,
+      delivery_fee: 0,
+      total,
+      currency: currency,
+      promo_code: isPromoApplied ? appliedPromoCode : undefined,
+      contact_methods: enabledContacts,
+      delivery_address: deliveryAddress,
+      delivery_city: '',
+      delivery_postal_code: '',
+      delivery_country: 'Thailand',
+      delivery_coordinates: deliveryCoordinates ? {
+        lat: deliveryCoordinates.lat,
+        lng: deliveryCoordinates.lng,
+        googleMapsLink: `https://www.google.com/maps?q=${deliveryCoordinates.lat},${deliveryCoordinates.lng}`
+      } : null,
+      gift_message: null,
+      notes: null
+    };
+  
+    // Create order in database (will also send Telegram notification)
+    const response = await api.post('/orders', orderData);
+  
+    if (response.data.success) {
       setShowSuccess(true);
+      
+      toast.success('Order placed successfully!');
       
       setTimeout(() => {
         clearCart();
         navigate('/');
       }, 3000);
-    
-    } catch (error) {
-      console.error('Order error:', error);
-      toast.error('Failed to place order. Please try again.');
-    } finally {
-      setIsProcessing(false);
+    } else {
+      throw new Error(response.data.message || 'Failed to create order');
     }
-  };
+  
+  } catch (error: any) {
+    console.error('Order error:', error);
+    toast.error(error.response?.data?.message || error.message || 'Failed to place order. Please try again.');
+  } finally {
+    setIsProcessing(false);
+  }
+};
 
   const getStrainTypeColor = (type?: string) => {
     switch (type?.toLowerCase()) {
