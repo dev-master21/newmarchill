@@ -20,7 +20,8 @@ import {
   Info,
   Leaf,
   LogIn,
-  MapPin
+  MapPin,
+  Save
 } from 'lucide-react';
 import { useCartStore } from '../store/cartStore';
 import { useAuthStore } from '../store/authStore';
@@ -47,6 +48,13 @@ const TelegramIcon = () => (
 interface ContactMethod {
   type: 'whatsapp' | 'telegram' | 'phone';
   enabled: boolean;
+}
+
+interface PaymentMethod {
+  type: 'cash' | 'bank_transfer' | 'crypto' | 'rub';
+  label: string;
+  enabled: boolean;
+  icon: string;
 }
 
 interface StrainInfo {
@@ -100,7 +108,19 @@ const Cart: React.FC = () => {
   const [isValidatingPromo, setIsValidatingPromo] = useState(false);
   const [appliedPromoCode, setAppliedPromoCode] = useState<string>('');
 
-  // Проверка авторизации при загрузке
+  // Payment methods
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([
+    { type: 'cash', label: 'Cash', enabled: false, icon: '💵' },
+    { type: 'bank_transfer', label: 'Bank Transfer', enabled: false, icon: '🏦' },
+    { type: 'crypto', label: 'Crypto', enabled: false, icon: '₿' },
+    { type: 'rub', label: 'RUB Transfer', enabled: false, icon: '🇷🇺' }
+  ]);
+
+  // Save info checkbox
+  const [saveInfo, setSaveInfo] = useState(false);
+  const [isLoadingUserPrefs, setIsLoadingUserPrefs] = useState(false);
+
+  // Загрузка сохраненных предпочтений при монтировании
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     
@@ -110,7 +130,101 @@ const Cart: React.FC = () => {
     console.log('Token exists:', !!token);
     console.log('Is authenticated:', isAuthenticated);
     console.log('=====================');
-  }, [user, isAuthenticated]);
+
+    // Загружаем сохраненные предпочтения пользователя
+    if (isAuthenticated && user) {
+      loadUserPreferences();
+    }
+  }, [isAuthenticated, user]);
+
+  // Функция загрузки предпочтений пользователя
+  const loadUserPreferences = async () => {
+    try {
+      setIsLoadingUserPrefs(true);
+      const response = await api.get('/users/preferences');
+      
+      if (response.data.success && response.data.preferences) {
+        const prefs = response.data.preferences;
+        
+        // Загружаем контакты
+        if (prefs.preferred_whatsapp || prefs.preferred_telegram || prefs.preferred_phone_contact) {
+          const newContactMethods = [...contactMethods];
+          const newContactInfo = { ...contactInfo };
+          
+          if (prefs.preferred_whatsapp) {
+            newContactMethods[0].enabled = true;
+            newContactInfo.whatsapp = prefs.preferred_whatsapp;
+          }
+          if (prefs.preferred_telegram) {
+            newContactMethods[1].enabled = true;
+            newContactInfo.telegram = prefs.preferred_telegram;
+          }
+          if (prefs.preferred_phone_contact) {
+            newContactMethods[2].enabled = true;
+            newContactInfo.phone = prefs.preferred_phone_contact;
+          }
+          
+          setContactMethods(newContactMethods);
+          setContactInfo(newContactInfo);
+        }
+        
+        // Загружаем способы оплаты
+        if (prefs.preferred_payment_methods) {
+          const savedPaymentMethods = typeof prefs.preferred_payment_methods === 'string' 
+            ? JSON.parse(prefs.preferred_payment_methods) 
+            : prefs.preferred_payment_methods;
+          
+          if (Array.isArray(savedPaymentMethods)) {
+            setPaymentMethods(prev => prev.map(pm => ({
+              ...pm,
+              enabled: savedPaymentMethods.includes(pm.type)
+            })));
+          }
+        }
+        
+        // Загружаем адрес
+        if (prefs.saved_delivery_address) {
+          setDeliveryAddress(prefs.saved_delivery_address);
+        }
+        
+        // Загружаем координаты
+        if (prefs.saved_delivery_coordinates) {
+          const coords = typeof prefs.saved_delivery_coordinates === 'string'
+            ? JSON.parse(prefs.saved_delivery_coordinates)
+            : prefs.saved_delivery_coordinates;
+          setDeliveryCoordinates(coords);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load user preferences:', error);
+    } finally {
+      setIsLoadingUserPrefs(false);
+    }
+  };
+
+  // Функция сохранения предпочтений
+  const saveUserPreferences = async () => {
+    try {
+      const enabledPaymentMethods = paymentMethods
+        .filter(pm => pm.enabled)
+        .map(pm => pm.type);
+      
+      const preferences = {
+        preferred_whatsapp: contactMethods[0].enabled ? contactInfo.whatsapp : null,
+        preferred_telegram: contactMethods[1].enabled ? contactInfo.telegram : null,
+        preferred_phone_contact: contactMethods[2].enabled ? contactInfo.phone : null,
+        preferred_payment_methods: enabledPaymentMethods,
+        saved_delivery_address: deliveryAddress || null,
+        saved_delivery_coordinates: deliveryCoordinates || null
+      };
+      
+      await api.put('/users/preferences', preferences);
+      toast.success('Your preferences have been saved!');
+    } catch (error) {
+      console.error('Failed to save preferences:', error);
+      toast.error('Failed to save preferences');
+    }
+  };
 
   const subtotal = items.reduce((sum, item) => {
     const price = getPriceForCurrency(item.product, currency);
@@ -213,6 +327,14 @@ const Cart: React.FC = () => {
     );
   };
 
+  const togglePaymentMethod = (type: 'cash' | 'bank_transfer' | 'crypto' | 'rub') => {
+    setPaymentMethods(prev => 
+      prev.map(method => 
+        method.type === type ? { ...method, enabled: !method.enabled } : method
+      )
+    );
+  };
+
   const getContactIcon = (type: string) => {
     switch (type) {
       case 'whatsapp':
@@ -300,6 +422,13 @@ const Cart: React.FC = () => {
       return false;
     }
 
+    // Проверка способов оплаты
+    const enabledPaymentMethods = paymentMethods.filter(m => m.enabled);
+    if (enabledPaymentMethods.length === 0) {
+      toast.error('Please select at least one payment method');
+      return false;
+    }
+
     return true;
   };
 
@@ -316,75 +445,89 @@ const Cart: React.FC = () => {
 
     // Проверка адреса
     if (!deliveryAddress || deliveryAddress.trim() === '') return false;
+
+    // Проверка способов оплаты
+    const enabledPaymentMethods = paymentMethods.filter(m => m.enabled);
+    if (enabledPaymentMethods.length === 0) return false;
     
     return items.length > 0;
   };
 
-const handlePlaceOrder = async () => {
-  if (!validateOrder()) return;
+  const handlePlaceOrder = async () => {
+    if (!validateOrder()) return;
 
-  setIsProcessing(true);
+    setIsProcessing(true);
 
-  try {
-    const enabledContacts = contactMethods
-      .filter(m => m.enabled)
-      .map(m => ({
-        type: m.type,
-        value: contactInfo[m.type]
-      }));
+    try {
+      // Сохраняем предпочтения если галочка активна
+      if (saveInfo) {
+        await saveUserPreferences();
+      }
+
+      const enabledContacts = contactMethods
+        .filter(m => m.enabled)
+        .map(m => ({
+          type: m.type,
+          value: contactInfo[m.type]
+        }));
+
+      const enabledPayments = paymentMethods
+        .filter(m => m.enabled)
+        .map(m => m.type);
+      
+      const orderData = {
+        items: items.map(item => ({
+          name: item.product.name,
+          quantity: item.quantity,
+          price: getPriceForCurrency(item.product, currency),
+          type: item.product.type,
+          strain: item.strain,
+          size: item.product.size
+        })),
+        subtotal,
+        discount_amount: discountAmount,
+        delivery_fee: 0,
+        total,
+        currency: currency,
+        promo_code: isPromoApplied ? appliedPromoCode : undefined,
+        contact_methods: enabledContacts,
+        payment_methods: enabledPayments,
+        delivery_address: deliveryAddress,
+        delivery_city: '',
+        delivery_postal_code: '',
+        delivery_country: 'Thailand',
+        delivery_coordinates: deliveryCoordinates ? {
+          lat: deliveryCoordinates.lat,
+          lng: deliveryCoordinates.lng,
+          googleMapsLink: `https://www.google.com/maps?q=${deliveryCoordinates.lat},${deliveryCoordinates.lng}`
+        } : null,
+        gift_message: null,
+        notes: null
+      };
     
-    const orderData = {
-      items: items.map(item => ({
-        name: item.product.name,
-        quantity: item.quantity,
-        price: getPriceForCurrency(item.product, currency),
-        type: item.product.type,
-        strain: item.strain,
-        size: item.product.size
-      })),
-      subtotal,
-      discount_amount: discountAmount,
-      delivery_fee: 0,
-      total,
-      currency: currency,
-      promo_code: isPromoApplied ? appliedPromoCode : undefined,
-      contact_methods: enabledContacts,
-      delivery_address: deliveryAddress,
-      delivery_city: '',
-      delivery_postal_code: '',
-      delivery_country: 'Thailand',
-      delivery_coordinates: deliveryCoordinates ? {
-        lat: deliveryCoordinates.lat,
-        lng: deliveryCoordinates.lng,
-        googleMapsLink: `https://www.google.com/maps?q=${deliveryCoordinates.lat},${deliveryCoordinates.lng}`
-      } : null,
-      gift_message: null,
-      notes: null
-    };
-  
-    // Create order in database (will also send Telegram notification)
-    const response = await api.post('/orders', orderData);
-  
-    if (response.data.success) {
-      setShowSuccess(true);
-      
-      toast.success('Order placed successfully!');
-      
-      setTimeout(() => {
-        clearCart();
-        navigate('/');
-      }, 3000);
-    } else {
-      throw new Error(response.data.message || 'Failed to create order');
+      // Create order in database (will also send Telegram notification)
+      const response = await api.post('/orders', orderData);
+    
+      if (response.data.success) {
+        setShowSuccess(true);
+        
+        toast.success('Order placed successfully!');
+        
+        setTimeout(() => {
+          clearCart();
+          navigate('/');
+        }, 3000);
+      } else {
+        throw new Error(response.data.message || 'Failed to create order');
+      }
+    
+    } catch (error: any) {
+      console.error('Order error:', error);
+      toast.error(error.response?.data?.message || error.message || 'Failed to place order. Please try again.');
+    } finally {
+      setIsProcessing(false);
     }
-  
-  } catch (error: any) {
-    console.error('Order error:', error);
-    toast.error(error.response?.data?.message || error.message || 'Failed to place order. Please try again.');
-  } finally {
-    setIsProcessing(false);
-  }
-};
+  };
 
   const getStrainTypeColor = (type?: string) => {
     switch (type?.toLowerCase()) {
@@ -707,6 +850,18 @@ const handlePlaceOrder = async () => {
             >
               Login
             </button>
+          </motion.div>
+        )}
+
+        {/* Loading user preferences indicator */}
+        {isLoadingUserPrefs && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="mb-6 p-4 rounded-2xl bg-primary/10 border border-primary/20 flex items-center gap-3"
+          >
+            <Loader className="w-5 h-5 text-primary animate-spin" />
+            <p className="text-primary">Loading your saved preferences...</p>
           </motion.div>
         )}
 
@@ -1068,11 +1223,83 @@ const handlePlaceOrder = async () => {
                 </div>
               </motion.div>
 
-              {/* Order Summary */}
+              {/* Payment Methods Section */}
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.4 }}
+                className="glass-dark rounded-2xl p-6 border border-white/10"
+              >
+                <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+                  <span className="text-xl">💳</span>
+                  Payment Method *
+                </h3>
+                <p className="text-sm text-gray-400 mb-4">Select your preferred payment method(s)</p>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  {paymentMethods.map((method) => (
+                    <motion.button
+                      key={method.type}
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => togglePaymentMethod(method.type)}
+                      className={`p-4 rounded-xl border-2 transition-all ${
+                        method.enabled
+                          ? 'border-primary bg-primary/10'
+                          : 'border-white/10 bg-white/5 hover:border-white/20'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">{method.icon}</span>
+                        <div className="flex-1 text-left">
+                          <div className="font-semibold text-sm">{method.label}</div>
+                        </div>
+                        {method.enabled && (
+                          <CheckCircle className="w-5 h-5 text-primary" />
+                        )}
+                      </div>
+                    </motion.button>
+                  ))}
+                </div>
+              </motion.div>
+
+              {/* Save Info Checkbox */}
+              {isAuthenticated && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.45 }}
+                  className="glass-dark rounded-2xl p-6 border border-white/10"
+                >
+                  <label className="flex items-center gap-4 cursor-pointer">
+                    <div 
+                      className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${
+                        saveInfo 
+                          ? 'bg-primary border-primary' 
+                          : 'border-white/30 hover:border-white/50'
+                      }`}
+                      onClick={() => setSaveInfo(!saveInfo)}
+                    >
+                      {saveInfo && <CheckCircle className="w-4 h-4 text-white" />}
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-semibold flex items-center gap-2">
+                        <Save className="w-4 h-4" />
+                        Save my information
+                      </div>
+                      <div className="text-sm text-gray-400">
+                        Remember my contacts, address, and payment preferences for faster checkout
+                      </div>
+                    </div>
+                  </label>
+                </motion.div>
+              )}
+
+              {/* Order Summary */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.5 }}
                 className="glass-dark rounded-2xl p-6 border border-white/10 sticky top-32"
               >
                 <h3 className="font-semibold text-lg mb-4">Order Summary</h3>

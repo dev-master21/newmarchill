@@ -298,6 +298,30 @@ const TopNav: React.FC = () => {
                 })}
               </nav>
 
+            {/* Currency Selector for Mobile */}
+              <div className="pb-6 border-b border-white/10 mb-6">
+                <p className="text-sm text-gray-400 mb-3">Currency</p>
+                <div className="flex items-center gap-2 p-2 rounded-xl bg-white/5 border border-white/10">
+                  {(['THB', 'RUB', 'USD'] as Currency[]).map((curr, index) => (
+                    <React.Fragment key={curr}>
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => setCurrency(curr)}
+                        className={`flex-1 px-3 py-2 text-sm font-medium transition-colors rounded-lg ${
+                          currency === curr
+                            ? 'text-primary bg-primary/20'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        {curr === 'THB' ? '฿ THB' : curr === 'RUB' ? '₽ RUB' : '$ USD'}
+                      </motion.button>
+                      {index < 2 && <span className="text-gray-600">|</span>}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+
               <div className="pt-6 border-t border-white/10">
                 {isAuthenticated ? (
                   <>

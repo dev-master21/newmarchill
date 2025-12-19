@@ -365,6 +365,7 @@ const AdminOrders: React.FC = () => {
                         <th className="px-6 py-4 text-left text-sm font-semibold text-gray-400">Customer</th>
                         <th className="px-6 py-4 text-left text-sm font-semibold text-gray-400">Date</th>
                         <th className="px-6 py-4 text-left text-sm font-semibold text-gray-400">Total</th>
+                        <th className="px-6 py-4 text-left text-sm font-semibold text-gray-400">Payment</th>
                         <th className="px-6 py-4 text-left text-sm font-semibold text-gray-400">Status</th>
                         <th className="px-6 py-4 text-center text-sm font-semibold text-gray-400">Actions</th>
                       </tr>
@@ -416,7 +417,24 @@ const AdminOrders: React.FC = () => {
                               </span>
                             </div>
                           </td>
-
+                          {/* Payment Method */}
+                          <td className="px-6 py-4">
+                            <span className="text-sm text-gray-300">
+                              {order.payment_method && order.payment_method !== 'pending' ? (
+                                order.payment_method.split(', ').slice(0, 2).map((m: string, i: number) => {
+                                  const icons: Record<string, string> = {
+                                    'cash': '💵',
+                                    'bank_transfer': '🏦',
+                                    'crypto': '₿',
+                                    'rub': '🇷🇺'
+                                  };
+                                  return <span key={i} className="mr-1">{icons[m.trim()] || '💳'}</span>;
+                                })
+                              ) : (
+                                <span className="text-gray-500">-</span>
+                              )}
+                            </span>
+                          </td>
                           {/* Status */}
                           <td className="px-6 py-4">
                             <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg text-sm font-semibold ${getStatusColor(order.status)}`}>
@@ -633,7 +651,39 @@ const AdminOrders: React.FC = () => {
                   )}
                 </div>
               </div>
-
+              {/* Payment Info */}
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold mb-4">Payment Information</h3>
+                <div className="glass-dark p-4 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <DollarSign className="w-5 h-5 text-gray-400" />
+                    <div>
+                      <p className="text-xs text-gray-400">Payment Method</p>
+                      <p className="font-semibold">
+                        {orderDetails.payment_method && orderDetails.payment_method !== 'pending' ? (
+                          <span className="flex items-center gap-2 flex-wrap">
+                            {orderDetails.payment_method.split(', ').map((method: string, idx: number) => {
+                              const labels: Record<string, string> = {
+                                'cash': '💵 Cash',
+                                'bank_transfer': '🏦 Bank Transfer', 
+                                'crypto': '₿ Crypto',
+                                'rub': '🇷🇺 RUB Transfer'
+                              };
+                              return (
+                                <span key={idx} className="px-2 py-1 bg-primary/20 rounded-lg text-sm">
+                                  {labels[method.trim()] || method}
+                                </span>
+                              );
+                            })}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500">Not specified</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
               {/* Order Items */}
               <div className="mb-6">
                 <h3 className="text-lg font-semibold mb-4">Order Items</h3>
