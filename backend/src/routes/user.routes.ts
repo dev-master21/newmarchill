@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authenticate, authorize } from '../middleware/auth.middleware';
+import { authenticate, authorize, AuthRequest } from '../middleware/auth.middleware';
 import pool from '../config/database';
 import { RowDataPacket } from 'mysql2';
 import { asyncHandler } from '../middleware/error.middleware';
@@ -27,10 +27,69 @@ router.get('/statistics', authenticate, authorize('admin'), asyncHandler(async (
   });
 }));
 
+// Get user preferences (for current user)
+router.get('/preferences', authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT preferred_whatsapp, preferred_telegram, preferred_phone_contact,
+            preferred_payment_methods, saved_delivery_address, saved_delivery_coordinates
+     FROM users WHERE id = ?`,
+    [userId]
+  );
+  
+  if (rows.length === 0) {
+    return res.status(404).json({ success: false, message: 'User not found' });
+  }
+  
+  res.json({
+    success: true,
+    preferences: rows[0]
+  });
+}));
+
+// Update user preferences (for current user)
+router.put('/preferences', authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const {
+    preferred_whatsapp,
+    preferred_telegram,
+    preferred_phone_contact,
+    preferred_payment_methods,
+    saved_delivery_address,
+    saved_delivery_coordinates
+  } = req.body;
+  
+  await pool.execute(
+    `UPDATE users SET 
+      preferred_whatsapp = ?,
+      preferred_telegram = ?,
+      preferred_phone_contact = ?,
+      preferred_payment_methods = ?,
+      saved_delivery_address = ?,
+      saved_delivery_coordinates = ?
+     WHERE id = ?`,
+    [
+      preferred_whatsapp || null,
+      preferred_telegram || null,
+      preferred_phone_contact || null,
+      preferred_payment_methods ? JSON.stringify(preferred_payment_methods) : null,
+      saved_delivery_address || null,
+      saved_delivery_coordinates ? JSON.stringify(saved_delivery_coordinates) : null,
+      userId
+    ]
+  );
+  
+  res.json({
+    success: true,
+    message: 'Preferences saved successfully'
+  });
+}));
+
 // Get all users (admin only)
 router.get('/', authenticate, authorize('admin'), asyncHandler(async (req: Request, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
-  const limit = Math.min(parseInt(req.query.limit as string) || 50, 100); // Max 100
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
   const offset = (page - 1) * limit;
   const search = (req.query.search as string || '').trim();
   const role = req.query.role as string || '';
@@ -59,32 +118,27 @@ router.get('/', authenticate, authorize('admin'), asyncHandler(async (req: Reque
   
   const params: any[] = [];
   
-  // Search filter
   if (search) {
     query += ` AND (name LIKE ? OR email LIKE ? OR phone LIKE ? OR username LIKE ? OR telegram_username LIKE ?)`;
     const searchPattern = `%${search}%`;
     params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
   }
   
-  // Role filter
   if (role && role !== 'ALL') {
     query += ` AND role = ?`;
     params.push(role);
   }
   
-  // Status filter
   if (status === 'active') {
     query += ` AND is_active = 1`;
   } else if (status === 'inactive') {
     query += ` AND is_active = 0`;
   }
   
-  // Add ORDER BY and LIMIT directly (not as prepared statement params)
   query += ` ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`;
   
   const [rows] = await pool.execute<RowDataPacket[]>(query, params);
   
-  // Get order statistics for each user
   const userIds = rows.map((user: any) => user.id);
   let orderStats: any[] = [];
   
@@ -104,7 +158,6 @@ router.get('/', authenticate, authorize('admin'), asyncHandler(async (req: Reque
     orderStats = stats;
   }
   
-  // Merge user data with order stats
   const usersWithStats = rows.map((user: any) => {
     const userStat = orderStats.find((stat: any) => stat.user_id === user.id);
     return {
@@ -115,7 +168,6 @@ router.get('/', authenticate, authorize('admin'), asyncHandler(async (req: Reque
     };
   });
   
-  // Get total count
   let countQuery = `SELECT COUNT(*) as total FROM users WHERE 1=1`;
   const countParams: any[] = [];
   
@@ -171,7 +223,6 @@ router.get('/:id', authenticate, authorize('admin'), asyncHandler(async (req: Re
   const user = userRows[0];
   delete user.password;
   
-  // Get order statistics
   const [orderStats] = await pool.execute<RowDataPacket[]>(
     `SELECT 
       COUNT(*) as total_orders,
@@ -182,7 +233,6 @@ router.get('/:id', authenticate, authorize('admin'), asyncHandler(async (req: Re
     [userId]
   );
   
-  // Get recent orders
   const [orders] = await pool.execute<RowDataPacket[]>(
     `SELECT id, order_number, status, payment_status, total, created_at
     FROM orders

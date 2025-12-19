@@ -33,6 +33,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       currency = 'THB',
       promo_code,
       contact_methods,
+      payment_methods,
       delivery_address,
       delivery_city = '',
       delivery_postal_code = '',
@@ -45,7 +46,8 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
     console.log('Parsed data:', { 
       items: items?.length, 
       delivery_address,
-      contact_methods: contact_methods?.length 
+      contact_methods: contact_methods?.length,
+      payment_methods: payment_methods?.length
     });
 
     // Validate
@@ -75,6 +77,11 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
     const primaryContact = contact_methods[0];
     const delivery_phone = primaryContact.value;
     const delivery_name = req.user?.name || 'Customer';
+
+    // Format payment methods
+    const paymentMethodStr = payment_methods && Array.isArray(payment_methods) 
+      ? payment_methods.join(', ') 
+      : 'pending';
 
     // Prepare notes with all contact methods and coordinates
     let orderNotes = '';
@@ -114,7 +121,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         total,
         currency,
         'standard',
-        'pending',
+        paymentMethodStr,
         'pending',
         delivery_name,
         delivery_phone,
@@ -132,7 +139,6 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
 
     // Create order items
     for (const item of items) {
-      // Find product ID by name
       const [productRows] = await connection.execute<RowDataPacket[]>(
         'SELECT id FROM products WHERE name = ? LIMIT 1',
         [item.name]
@@ -145,7 +151,6 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
 
       const productId = productRows[0].id;
 
-      // Find strain ID if strain is provided
       let strainId = null;
       if (item.strain) {
         const [strainRows] = await connection.execute<RowDataPacket[]>(
@@ -185,6 +190,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         currency,
         promoCode: promo_code,
         contactMethods: contact_methods,
+        paymentMethods: payment_methods,
         deliveryAddress: delivery_address,
         deliveryCoordinates: delivery_coordinates,
         giftMessage: gift_message
@@ -194,7 +200,8 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         orderNumber: telegramData.orderNumber,
         userName: telegramData.userName,
         itemsCount: telegramData.items.length,
-        total: telegramData.total
+        total: telegramData.total,
+        paymentMethods: telegramData.paymentMethods
       });
 
       const telegramMessage = formatOrderForTelegram(telegramData);
@@ -207,7 +214,6 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       console.error('Error name:', telegramError.name);
       console.error('Error message:', telegramError.message);
       console.error('Error stack:', telegramError.stack);
-      // Don't fail the order if Telegram fails
     }
     console.log('=== END TELEGRAM NOTIFICATION ===\n');
 
@@ -235,12 +241,10 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Format order for Telegram
 // Format order for Telegram - SAFE VERSION
 function formatOrderForTelegram(data: any): string {
   console.log('🔧 Formatting Telegram message...');
   
-  // Helper function to safely convert to number
   const toNumber = (value: any): number => {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') {
@@ -281,6 +285,20 @@ function formatOrderForTelegram(data: any): string {
     }
   }
   message += `*Total: ฿${total.toFixed(2)}* ${data.currency}\n`;
+
+  // Payment Methods
+  if (data.paymentMethods && data.paymentMethods.length > 0) {
+    message += `\n*💳 Payment Methods:*\n`;
+    const paymentLabels: Record<string, string> = {
+      'cash': '💵 Cash',
+      'bank_transfer': '🏦 Bank Transfer',
+      'crypto': '₿ Crypto',
+      'rub': '🇷🇺 RUB Transfer'
+    };
+    data.paymentMethods.forEach((method: string) => {
+      message += `${paymentLabels[method] || method}\n`;
+    });
+  }
   
   message += `\n*📞 Contact Methods:*\n`;
   data.contactMethods.forEach((method: any) => {
